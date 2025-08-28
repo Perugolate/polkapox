@@ -104,7 +104,10 @@ def identify_low_coverage_contigs(segments):
 def filter_links_by_coverage(low_cov, links):
     """Filter out links involving low coverage contigs."""
     filtered_links = [link for link in links if link.from_name not in low_cov and link.to_name not in low_cov]
-    print('Filtered out for coverage', low_cov )
+    print('\n')
+    print('Filtering contigs for coverage')
+    print('Filtered out for coverage:', low_cov )
+    print('\n')
     return filtered_links, "PASS"
 
 def find_longest_contig(segments, output_dir):
@@ -141,9 +144,10 @@ def create_filtered_graph(links, segments):
 
     # Remove all nodes that are not in the largest component
     nodes_to_remove = set(graph.nodes) - largest_component
-    print('Removing nodes that are not part of the main graph, usually disconnected or forming subgraphs', nodes_to_remove)
+    print('Removing nodes that are not part of the main graph, usually disconnected or forming subgraphs:', nodes_to_remove)
     graph.remove_nodes_from(nodes_to_remove)
     # Check if the graph is still disconnected after filtering
+    print('Checking that the graph is still connected')
     if not nx.is_connected(graph):
         return None, "WARNING: Graph is not fully connected"
 
@@ -159,11 +163,14 @@ def create_filtered_graph(links, segments):
     num_nodes = graph.number_of_nodes()
     # make sure the number of edges and nodes are equal (perfect loop) or one off (loop + ITR)
     #print(num_edges)
+    print('Checking that the graph forms a complete cycle, meaning all contigs are connected')
     if all_degree_two and num_edges == num_nodes or num_edges == num_nodes+1:
         print('The graph forms a complete cycle')
+        print('\n')
         return graph, "PASS"
     else:
         print("FAIL: Graph is not circular")
+        print('\n')
         return None, "WARNING: Graph is not circular, either it's an incomplete assembly, or it has extra ITRs or some recombination elements. Check graph in Bandage"
 
 def identify_itr(filtered_edges, segments):
@@ -174,14 +181,16 @@ def identify_itr(filtered_edges, segments):
     but the ITRs end when you have an ITR with three connections. If no 3 connections exist, then there is 
     only 1 ITR. If there is more than one ITR with 3+ connections then there is a hairpin somewhere and the script should fail.
     """
+    print('Processing ITRs, first identify potential ITRs')
     # Create a dictionary to store the set of connected orientations for each contig
     depth_data = {seg.get('name'): float(seg.get('dp')) for seg in segments if 'dp' in seg.tagnames}
+    print('depth data',depth_data )
     lower_bound = 1.2
     filt_depth = 0.6
     potential_itrs = [contig for contig, depth in depth_data.items() if lower_bound < depth]
     filt_contigs = [contig for contig, depth in depth_data.items() if filt_depth >= depth]
     print("Potential ITRs", potential_itrs)
-    print('Filtered out contigs',filt_contigs)
+    print(f'Filtered out contigs with coverage below {filt_depth} from ITR list',filt_contigs)
 
     # Identify the terminal ITR
     terminal_itr = []
@@ -206,7 +215,7 @@ def identify_itr(filtered_edges, segments):
                 all_orients.append(edge.to_orient)
     
         # Now from_orients and to_orients are sets, all_orients is the combined list
-        print(itr, from_orients, to_orients, all_orients)
+        # print(itr, from_orients, to_orients, all_orients)
 
         # Determine if the contig is a terminal ITR based on orientations
         if (len(from_orients) == 1 and len(to_orients) == 0) or (len(from_orients) == 0 and len(to_orients) == 1):
@@ -218,6 +227,8 @@ def identify_itr(filtered_edges, segments):
             final_itr.append(itr)
     
     # This should be terminal ITR and then the final ITR before 1x sequence, contraining this helps remove other repeats that get flagged as ITRs
+    print('\n')
+    print('Identify terminal ITR and determin ITR sequence and order')
     print("Terminal ITR contigs based on links:", terminal_itr)
     print("Other end of ITR sequence based on links:", final_itr)
 
@@ -245,8 +256,13 @@ def identify_itr(filtered_edges, segments):
         print('Warning, missing terminal or final ITR')
     
     print('These are the selected ITRs:', selected_itrs)
-    
-    itr_length = sum(len(seg.sequence) for seg in segments if seg.name in selected_itrs)
+
+
+    # old code where we didnt take copy number into account
+    # itr_length = sum(len(seg.sequence) for seg in segments if seg.name in selected_itrs)
+
+    # calculate ITR length based on copy number, where length of a contig is len * round(dp/2)
+    itr_length = sum(len(seg.sequence) * int((depth_data.get(seg.get('name'), 2.0) / 2.0) + 0.5) for seg in segments if seg.get('name') in selected_itrs)
 
     if selected_itrs and len(terminal_itr) < 2:
         status = 'PASS: ITRs conform to expectation'
@@ -255,10 +271,11 @@ def identify_itr(filtered_edges, segments):
 
     print("contigs in ITR", selected_itrs, "with total length", itr_length)
     print(status)
+    print('\n')
     return selected_itrs, itr_length, status, terminal_itr, final_itr
 
 def get_final_paths(filtered_edges, filtered_graph, segments):
-
+    print('Get the final path with ITRs and other contigs')
     """Find all longest paths in the graph starting from any ITR."""
     itrs, itr_length, itr_status, terminal_itr, final_itr = identify_itr(filtered_edges, segments)
     if not itrs or 'FAIL' in itr_status:
@@ -285,7 +302,8 @@ def get_final_paths(filtered_edges, filtered_graph, segments):
 
     final_paths = []
     if longest_paths:
-        print("longest path list =", longest_paths)
+        print('There are multiple longests paths when starting from terminal ITR')
+        print("Longest path list =", longest_paths)
 
         # Ensure ITRs are not duplicated and are correctly oriented
         for path in longest_paths:
@@ -305,6 +323,9 @@ def get_final_paths(filtered_edges, filtered_graph, segments):
         return [], [], [], status
         
 def orient_longest_contig(query, reference, blast_db_dir):
+    print('\n')
+    print('Orienting longest contig using F13L + Blast')
+
     blastResults = query + "_blast.out"
     blast_db_path = os.path.join(blast_db_dir, query + "_DB")
     makeblastdb_command = ["makeblastdb", "-in", query, "-out", blast_db_path, "-dbtype", "nucl"]
@@ -327,14 +348,16 @@ def orient_longest_contig(query, reference, blast_db_dir):
             sstart = int(blastHits[5])
             send = int(blastHits[6])
     orientation = '1 +' if sstart < send else '1 -'
-    print('orientation of longest contig',orientation)
+    print('Orientation of longest contig:',orientation)
     return orientation, "PASS"
 
 def get_final_orientation(left_itrs, middle_contigs, final_paths, lnks, longest_contig, longest_orient, itrs):
+    print('\n')
+    print('Getting final orientation')
     # Build a dictionary for quick lookup of links
     links_dict = {}
     for link in lnks:
-        print(link)
+        # print(link)
         # Map direct links
         key = (link.from_name, link.to_name)
         links_dict[key] = (link.from_orient, link.to_orient)
@@ -348,9 +371,9 @@ def get_final_orientation(left_itrs, middle_contigs, final_paths, lnks, longest_
     final_oriented_path = []
 
     if len(final_paths) > 1:
+        print('Iterating over at least two paths to identify the path with the correctly oriented longest contig')
         # Iterate over each path
         for path in final_paths:
-            print('heres the path in the loop',path)
             contig_orientations = []
             print('Processing path:', path)
 
@@ -359,7 +382,6 @@ def get_final_orientation(left_itrs, middle_contigs, final_paths, lnks, longest_
 
             # Assign orientation to the first contig
             first_contig = path[0]
-            print('first contig', first_contig)
             first_contig_orient = None
             # Find an initial orientation for the first contig
             for link in lnks:
@@ -410,6 +432,7 @@ def get_final_orientation(left_itrs, middle_contigs, final_paths, lnks, longest_
         return path, final_oriented_path, "PASS"
 
     else:
+        print('Iterating over only one longest path, usually only one contig + ITRs so path is the same both directions')
         # Only one longest path, usually one assembled contig + ITRs
         path = final_paths[0]
         print('Procesing path: ',path)
@@ -488,6 +511,7 @@ def get_final_orientation(left_itrs, middle_contigs, final_paths, lnks, longest_
         flipped_orients = []
 
         # Check if this path contains the longest contig with the correct orientation
+        # In some cases, the orientation will be flipped, so we check and then flip only the longest contig but keep the itrs as is
         if longest_orient in contig_orientations:
             print('Single path matches longest contig orientation')
         else:
@@ -508,10 +532,17 @@ def get_final_orientation(left_itrs, middle_contigs, final_paths, lnks, longest_
         print('Final oriented path with correct longest contig orientation:', final_oriented_path)
         return path, final_oriented_path, "PASS"
 
-def get_final_sequence(oriented_path, segments):
+def get_final_sequence(oriented_path, segments, itrs):
     """Generate the final sequence for a given path and orientation."""
+    print('\n')
+    print('Generating the final sequence based on contig order, orientation, and copy number')
+
     # Create a dictionary mapping segment names to sequences
     segment_dict = {seg.name: seg.sequence for seg in segments}
+    depth_dict = {seg.name: (round(float(seg.get('dp'))/2) if seg.name in itrs else round(float(seg.get('dp')))) for seg in segments if 'dp' in seg.tagnames}
+
+    # print(depth_dict)
+
     final_sequence = ""  # Initialize an empty string to accumulate the final sequence
 
     for segment_name in oriented_path:
@@ -528,15 +559,27 @@ def get_final_sequence(oriented_path, segments):
         # Check if the segment should be reversed
         if orient == '-':
             seq = str(Seq(seq).reverse_complement())  # Reverse complement the sequence if needed
+    
+        copies = int(depth_dict.get(contig, 1))
+        # print('copies',segment_name,copies)
+        # print('leng of contigs')
+        # print(len(seq))
+        # print(segment_name,(len(seq * int(copies))))
+        final_sequence += seq * copies
+        # print(len(final_sequence))
 
-        final_sequence += seq  # Concatenate the sequence
-
+        # final_sequence += seq  # Concatenate the sequence
+    # Check that this is correct length
+    ### 
     final_sequence_length = len(final_sequence)
     print('final_sequence_length = ', final_sequence_length)
+    print('\n')
     # Create a comma-separated string of the oriented path
     final_order_orientation_copy_number = ",".join(oriented_path)
     return final_sequence, final_sequence_length, final_order_orientation_copy_number, "PASS"
 
+# check that this writes the correct sequence
+# SHould be final_sequence from get_final_sequence
 def write_oriented_fasta(final_path, segments, output_file, input_file):
     """Write the segments in the specified orientation to a single FASTA entry with the input file name as the header."""
     print('Writing final oriented fasta to out file')
@@ -713,7 +756,7 @@ def process_graph(gfa_graph, output_dir, input_file, reference, log):
 
         # Generate the final sequence for this path
         final_sequence, seq_len, final_order_orientation_copy_number, status = get_final_sequence(
-            final_oriented_path, filtered_segments)
+            final_oriented_path, filtered_segments, itrs)
         if status != "PASS":
             write_log_and_exit(log, "FAIL: Sequence generation failed for the final path.")
 
@@ -737,6 +780,8 @@ def process_graph(gfa_graph, output_dir, input_file, reference, log):
                 'final_orientation': final_oriented_path
             }
         }
+        
+        print('Pipeline ran to completion!')
 
         # Remove the blast_db directory
         shutil.rmtree(blast_db_dir)  # Remove the directory and its contents
@@ -791,9 +836,9 @@ def main(arguments):
             return
 
         process_graph(gfa_graph, output_dir, gfa_file, reference_file, log)
+
     except Exception as e:
         log['Exception'] = {'error': str(e)}
         write_log_and_exit(log, "FAIL: Exception occurred in main")
-
 if __name__ == '__main__':
     main(sys.argv[1:])
